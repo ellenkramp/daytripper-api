@@ -2,6 +2,7 @@ import type {
   APIGatewayProxyEventV2,
   APIGatewayProxyResultV2,
 } from "aws-lambda";
+import { z } from "zod";
 
 // Keep this permissive for local dev; tighten later (e.g., allow only localhost + your Vercel domain).
 const CORS_HEADERS = {
@@ -13,17 +14,28 @@ const CORS_HEADERS = {
 
 type SpiceLabel = "mild" | "medium" | "hot";
 
-type ItineraryRequest = {
-  zipCode?: string;
-  maxDistanceMiles?: number;
-  intents?: string[];
-  preferences?: {
-    spiceLabel?: SpiceLabel;
-    // Internal signal (optional). You can derive this from spiceLabel later.
-    adventureScore?: number;
-  };
-  explain?: boolean;
-};
+const ItineraryRequestSchema = z.object({
+  zipCode: z
+    .string()
+    .trim()
+    .regex(/^\d{5}$/, "zipCode must be 5 digits")
+    .optional(),
+
+  maxDistanceMiles: z.number().int().positive().max(100).optional(),
+
+  intents: z.array(z.string()).max(3).optional(),
+
+  preferences: z
+    .object({
+      spiceLabel: z.enum(["mild", "medium", "hot"]).optional(),
+      adventureScore: z.number().min(1).max(10).optional(),
+    })
+    .optional(),
+
+  explain: z.boolean().optional(),
+});
+
+type ItineraryRequest = z.infer<typeof ItineraryRequestSchema>;
 
 type ItineraryStop = {
   id: string;
@@ -71,16 +83,14 @@ function toAdventureScore(spiceLabel: SpiceLabel | undefined): number | undefine
 }
 
 function parseJsonBody(event: APIGatewayProxyEventV2): ItineraryRequest {
-  if (!event.body) return {};
-  try {
-    const raw = event.isBase64Encoded
+  const rawBody = event.body
+    ? event.isBase64Encoded
       ? Buffer.from(event.body, "base64").toString("utf8")
-      : event.body;
-    const parsed = JSON.parse(raw);
-    return (parsed ?? {}) as ItineraryRequest;
-  } catch {
-    return {};
-  }
+      : event.body
+    : "{}";
+
+  const json = JSON.parse(rawBody);
+  return ItineraryRequestSchema.parse(json);
 }
 
 export async function handler(
@@ -93,18 +103,30 @@ export async function handler(
     return { statusCode: 204, headers: CORS_HEADERS, body: "" };
   }
 
-  const req = parseJsonBody(event);
+  let req: ItineraryRequest;
+  try {
+    req = parseJsonBody(event);
+  } catch (err) {
+    return {
+      statusCode: 400,
+      headers: CORS_HEADERS,
+      body: JSON.stringify({
+        error: "Invalid request",
+        details:
+          err instanceof z.ZodError
+            ? err.issues.map((i) => ({ path: i.path, message: i.message }))
+            : undefined,
+      }),
+    };
+  }
 
   const zipCode = (req.zipCode ?? "00000").trim();
   const maxDistanceMiles = Number.isFinite(req.maxDistanceMiles)
     ? (req.maxDistanceMiles as number)
     : 30;
-  const intents = Array.isArray(req.intents) ? req.intents.slice(0, 3) : [];
+  const intents = req.intents ?? [];
   const spiceLabel = req.preferences?.spiceLabel;
-  const adventureScore =
-    typeof req.preferences?.adventureScore === "number"
-      ? req.preferences.adventureScore
-      : toAdventureScore(spiceLabel);
+  const adventureScore = req.preferences?.adventureScore ?? toAdventureScore(spiceLabel);
   const explain = Boolean(req.explain);
 
   const stops: ItineraryStop[] = [
