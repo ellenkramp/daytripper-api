@@ -5,6 +5,9 @@ import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import * as path from "path";
 import * as apigwv2 from "aws-cdk-lib/aws-apigatewayv2";
 import * as integrations from "aws-cdk-lib/aws-apigatewayv2-integrations";
+import * as dotenv from "dotenv";
+
+dotenv.config();
 
 export class InfraStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -16,6 +19,9 @@ export class InfraStack extends cdk.Stack {
       handler: "handler",
       memorySize: 256,
       timeout: cdk.Duration.seconds(10),
+      environment: {
+        GOOGLE_MAPS_API_KEY: process.env.GOOGLE_MAPS_API_KEY ?? "",
+      },
     });
 
     const httpApi = new apigwv2.HttpApi(this, "DaytripperHttpApi", {
